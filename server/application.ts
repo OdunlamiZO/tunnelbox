@@ -12,13 +12,7 @@ import {
   validateTunnelRequest,
 } from "./validation";
 
-const LOCAL_HOSTNAMES = new Set([
-  "127.0.0.1",
-  "localhost",
-  "[::1]",
-  "tunnelbox",
-  "tunnelbox.localhost",
-]);
+const LOCAL_HOSTNAMES = new Set(["127.0.0.1", "localhost"]);
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 

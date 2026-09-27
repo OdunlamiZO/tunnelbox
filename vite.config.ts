@@ -2,7 +2,7 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
-import { DASHBOARD_PORT } from "./server/constants";
+import { DASHBOARD_PORT } from "./server/constants.ts";
 
 export default defineConfig({
   root: "web",

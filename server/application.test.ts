@@ -48,18 +48,6 @@ describe("request guard", () => {
     expect(response.statusCode).toBe(200);
   });
 
-  it("allows the tunnelbox host alias", async () => {
-    const response = await (
-      await application()
-    ).inject({
-      method: "GET",
-      url: "/api/tunnels",
-      headers: { host: "tunnelbox:4600" },
-    });
-
-    expect(response.statusCode).toBe(200);
-  });
-
   it("blocks a request whose Host is not local (DNS rebinding)", async () => {
     const response = await (
       await application()

@@ -22,7 +22,7 @@ Tunnels only start when you switch them on. The dashboard itself can start autom
 
 - macOS with Node.js 20 or newer
 - A VPS running Ubuntu or Debian with nginx, ports 80 and 443 open
-- SSH key login to the VPS as `root` (or another user with root rights) from this Mac
+- SSH key login to the VPS as `root` from this Mac
 - A domain (or a free DuckDNS subdomain) per tunnel, pointing at the VPS
 
 ## Install
@@ -46,7 +46,7 @@ VPS_HOST=203.0.113.10
 
 ### 1. SSH key login for the administrator user
 
-tunnelbox runs VPS commands as the administrator user (`root` by default) through your Mac's `ssh`, using an SSH key. Key login must work without any prompt: tunnelbox doesn't ask for or store passwords, and it can't enter a key passphrase.
+tunnelbox runs VPS commands as `root` through your Mac's `ssh`, using an SSH key. Key login must work without any prompt: tunnelbox doesn't ask for or store passwords, and it can't enter a key passphrase.
 
 Create a key for the VPS (choose a passphrase when asked):
 
@@ -82,7 +82,7 @@ Check that it works with no prompt at all — this is how tunnelbox logs in:
 ssh -o BatchMode=yes root@$VPS_HOST true && echo "key login works"
 ```
 
-If it still says "Permission denied", check the VPS allows root to log in with a key:
+If it says "Permission denied", check the VPS allows root to log in with a key:
 
 ```bash
 ssh root@$VPS_HOST "sshd -T | grep permitrootlogin"
@@ -140,22 +140,6 @@ The last 100 requests per tunnel are kept in memory; they're cleared when the da
 - **Edit** changes the name and local port straight away; a running tunnel restarts on the new port. Changing the domain sets up the new domain on the VPS first, then removes the old one.
 - **Delete** stops the tunnel and removes its nginx site, certificate, and port permission from the VPS. Other sites on the VPS are not touched.
 
-## Open the dashboard at http://tunnelbox:4600
-
-Add a hosts entry so the name `tunnelbox` points at this Mac:
-
-```bash
-echo "127.0.0.1 tunnelbox" | sudo tee -a /etc/hosts
-```
-
-Then open http://tunnelbox:4600. Type the `http://` the first time, or the browser may search for "tunnelbox" instead.
-
-To undo, remove the `127.0.0.1 tunnelbox` line from `/etc/hosts`:
-
-```bash
-sudo sed -i '' '/^127\.0\.0\.1 tunnelbox$/d' /etc/hosts
-```
-
 ## Start the dashboard automatically at login
 
 This starts the dashboard (not the tunnels) whenever you log in, and restarts it if it stops.
@@ -195,7 +179,7 @@ plutil -lint ~/Library/LaunchAgents/com.tunnelbox.dashboard.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tunnelbox.dashboard.plist
 ```
 
-Check it's running: open http://tunnelbox:4600 (or http://localhost:4600).
+Check it's running: open http://localhost:4600.
 
 Managing it:
 
@@ -219,7 +203,7 @@ The launch agent records the Node.js path at the time you create it. If you swit
 ## Security
 
 - The dashboard listens on `127.0.0.1` only; other devices on your network can't reach it.
-- Requests must use a local host name (`localhost`, `127.0.0.1`, `tunnelbox`, `tunnelbox.localhost`), and requests that change anything must come from the dashboard itself. Other websites open in your browser can't control it.
+- Requests must use a local host name (`localhost` or `127.0.0.1`), and requests that change anything must come from the dashboard itself. Other websites open in your browser can't control it.
 - No passwords or private keys are stored. The configuration holds the VPS host, user names, the path to the tunnel key, and the certificate email.
 - The tunnel key can only open the specific localhost ports listed for it on the VPS; it can't open a shell.
 - While a tunnel is on, the app behind it is reachable from the internet. Switch tunnels off when you don't need them.
