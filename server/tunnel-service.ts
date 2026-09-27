@@ -15,10 +15,10 @@ import type {
 } from "./types";
 import { ValidationError } from "./validation";
 import {
-  changeDomainScript,
-  deprovisionTunnelScript,
-  prepareServerScript,
-  provisionTunnelScript,
+  changeDomainCommand,
+  deprovisionTunnelCommand,
+  prepareServerCommand,
+  provisionTunnelCommand,
 } from "./vps-scripts";
 
 export class NotFoundError extends Error {}
@@ -35,7 +35,7 @@ export class TunnelService {
     private readonly store: ConfigurationStore,
     private readonly manager: TunnelManager,
     private readonly jobs: JobRunner,
-    private readonly runRemoteScript: RemoteRunner
+    private readonly runRemoteCommand: RemoteRunner
   ) {}
 
   listTunnels(): TunnelView[] {
@@ -138,9 +138,9 @@ export class TunnelService {
 
     const job = this.jobs.start("change-domain", id, async (log) => {
       await this.assertDomainPointsToServer(moved.domain, settings, log);
-      await this.runRemoteScript(
+      await this.runRemoteCommand(
         settings,
-        changeDomainScript(renamed, moved, settings),
+        changeDomainCommand(renamed, moved, settings),
         log
       );
 
@@ -174,9 +174,9 @@ export class TunnelService {
         (port) => port !== tunnel.remotePort
       );
 
-      await this.runRemoteScript(
+      await this.runRemoteCommand(
         settings,
-        deprovisionTunnelScript(tunnel, settings, publicKey, remainingPorts),
+        deprovisionTunnelCommand(tunnel, publicKey, remainingPorts),
         log
       );
       await this.removeTunnel(id);
@@ -207,9 +207,9 @@ export class TunnelService {
     return this.jobs.start("prepare-server", null, async (log) => {
       const publicKey = await this.readPublicKey(settings);
 
-      await this.runRemoteScript(
+      await this.runRemoteCommand(
         settings,
-        prepareServerScript(settings, publicKey, this.provisionedPorts()),
+        prepareServerCommand(publicKey, this.provisionedPorts()),
         log
       );
     });
@@ -228,9 +228,9 @@ export class TunnelService {
       const publicKey = await this.readPublicKey(settings);
       const ports = [...this.provisionedPorts(), tunnel.remotePort];
 
-      await this.runRemoteScript(
+      await this.runRemoteCommand(
         settings,
-        provisionTunnelScript(tunnel, settings, publicKey, ports),
+        provisionTunnelCommand(tunnel, settings, publicKey, ports),
         log
       );
       await this.replaceTunnel({

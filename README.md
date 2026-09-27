@@ -22,7 +22,7 @@ Tunnels only start when you switch them on. The dashboard itself can start autom
 
 - macOS with Node.js 20 or newer
 - A VPS running Ubuntu or Debian with nginx, ports 80 and 443 open
-- SSH key login to the VPS as `root` from this Mac
+- Root access to the VPS once, to install tunnelbox's helper
 - A domain (or a free DuckDNS subdomain) per tunnel, pointing at the VPS
 
 ## Install
@@ -44,55 +44,37 @@ The commands below use your VPS's IP address or hostname. Set it once in each te
 VPS_HOST=203.0.113.10
 ```
 
-### 1. SSH key login for the administrator user
+tunnelbox logs in to the VPS as `tunnelbox-admin`, a user that can run only one program as root: `/usr/local/sbin/tunnelbox-helper`. The helper manages tunnelbox's own nginx sites, certificates, and tunnel user, and nothing else.
 
-tunnelbox runs VPS commands as `root` through your Mac's `ssh`, using an SSH key. Key login must work without any prompt: tunnelbox doesn't ask for or store passwords, and it can't enter a key passphrase.
+### 1. Administrator key
 
-Create a key for the VPS (choose a passphrase when asked):
-
-```bash
-ssh-keygen -t ed25519 -f ~/.ssh/vps_admin -C "vps-admin"
-```
-
-Install it for root on the VPS (asks for the root password one last time):
+Create a key for `tunnelbox-admin` (choose a passphrase when asked):
 
 ```bash
-ssh-copy-id -i ~/.ssh/vps_admin.pub root@$VPS_HOST
+ssh-keygen -t ed25519 -f ~/.ssh/tunnelbox_admin -C "tunnelbox-admin"
 ```
 
-Save the key's passphrase in the macOS Keychain:
+Save its passphrase in the macOS Keychain:
 
 ```bash
-ssh-add --apple-use-keychain ~/.ssh/vps_admin
+ssh-add --apple-use-keychain ~/.ssh/tunnelbox_admin
 ```
 
-Tell SSH to use this key for the VPS and read the passphrase from the Keychain:
+Tell SSH to use this key when logging in to the VPS as `tunnelbox-admin`, and to read its passphrase from the Keychain:
 
 ```bash
 printf '%s\n' '' \
-"Host $VPS_HOST" \
-'    IdentityFile ~/.ssh/vps_admin' \
+"Match host $VPS_HOST user tunnelbox-admin" \
+'    IdentityFile ~/.ssh/tunnelbox_admin' \
 '    UseKeychain yes' \
 '    AddKeysToAgent yes' >> ~/.ssh/config
 ```
 
-Check that it works with no prompt at all — this is how tunnelbox logs in:
-
-```bash
-ssh -o BatchMode=yes root@$VPS_HOST true && echo "key login works"
-```
-
-If it says "Permission denied", check the VPS allows root to log in with a key:
-
-```bash
-ssh root@$VPS_HOST "sshd -T | grep permitrootlogin"
-```
-
-It must say `yes` or `prohibit-password`.
+The Keychain applies only to `tunnelbox-admin`; logins as other users on the VPS keep asking for their key's passphrase.
 
 ### 2. Tunnel key
 
-The tunnels use a second key, which can only open the tunnel ports on the VPS — it can't log in as root or open a shell. It has no passphrase so tunnels can reconnect on their own:
+The tunnels use a second key, which can only open the tunnel ports on the VPS — it can't open a shell. It has no passphrase so tunnels can reconnect on their own:
 
 ```bash
 ssh-keygen -t ed25519 -f ~/.ssh/tunnelbox_tunnel -C "tunnelbox-tunnel" -N ""
@@ -100,20 +82,49 @@ ssh-keygen -t ed25519 -f ~/.ssh/tunnelbox_tunnel -C "tunnelbox-tunnel" -N ""
 
 tunnelbox installs it on the VPS for you (see **Prepare VPS** below).
 
-### 3. VPS settings
+### 3. Install the helper on the VPS
+
+Run these from the tunnelbox folder. They log in as root once, to create `tunnelbox-admin`, install the helper, and allow `tunnelbox-admin` to run it:
+
+```bash
+scp vps/tunnelbox-helper root@$VPS_HOST:/root/tunnelbox-helper
+ssh root@$VPS_HOST "bash -s -- tunnelbox-admin tunnel '$(cat ~/.ssh/tunnelbox_admin.pub)'" < vps/install.sh
+```
+
+Check that tunnelbox can log in and run the helper with no prompt at all:
+
+```bash
+ssh -o BatchMode=yes tunnelbox-admin@$VPS_HOST sudo -n /usr/local/sbin/tunnelbox-helper version
+```
+
+It prints `1`. After updating tunnelbox, run the two install commands again to update the helper.
+
+### 4. VPS settings
 
 In the dashboard, open **Settings** and fill in:
 
 | Field                      | Value                                     |
 | -------------------------- | ----------------------------------------- |
-| VPS host                   | your VPS IP address or hostname           |
-| Administrator user         | `root`                                    |
+| VPS host                   | the same value as `VPS_HOST`              |
+| Administrator user         | `tunnelbox-admin`                         |
 | Tunnel user                | `tunnel`                                  |
 | Tunnel key                 | `~/.ssh/tunnelbox_tunnel`                 |
 | Certificate email          | your email (Let's Encrypt expiry notices) |
 | First VPS port for tunnels | `9080`                                    |
 
-Click **Save**, then click **Prepare VPS**: it creates the tunnel user, installs the tunnel key, and adds the SSH keep-alive settings. It is safe to run again.
+**Tunnel user** must be the same name you passed to `install.sh` (`tunnel` above): the helper manages that user, and the tunnels log in as it.
+
+Click **Save**, then click **Prepare VPS**: it installs the tunnel key and the SSH keep-alive settings. It is safe to run again.
+
+### Optional: turn off root SSH login
+
+tunnelbox doesn't need root login once the helper is installed. Turn it off only if you have another way to act as root on the VPS, such as a user with full `sudo` or your provider's web console — otherwise you can lock yourself out:
+
+```bash
+ssh root@$VPS_HOST "printf 'PermitRootLogin no\n' > /etc/ssh/sshd_config.d/10-no-root-login.conf && sshd -t && systemctl reload ssh"
+```
+
+To turn it back on, delete `/etc/ssh/sshd_config.d/10-no-root-login.conf` as root and reload ssh.
 
 ## Adding a tunnel
 
@@ -205,6 +216,7 @@ The launch agent records the Node.js path at the time you create it. If you swit
 - The dashboard listens on `127.0.0.1` only; other devices on your network can't reach it.
 - Requests must use a local host name (`localhost` or `127.0.0.1`), and requests that change anything must come from the dashboard itself. Other websites open in your browser can't control it.
 - No passwords or private keys are stored. The configuration holds the VPS host, user names, the path to the tunnel key, and the certificate email.
+- The administrator key can't act as root on the VPS: `tunnelbox-admin` can run only the helper, which checks every value it receives and changes only nginx sites named `tunnelbox-…`, their certificates, and the tunnel user's key.
 - The tunnel key can only open the specific localhost ports listed for it on the VPS; it can't open a shell.
 - While a tunnel is on, the app behind it is reachable from the internet. Switch tunnels off when you don't need them.
 
@@ -215,18 +227,23 @@ The launch agent records the Node.js path at the time you create it. If you swit
 | `~/.tunnelbox/configuration.json`                     | VPS settings and tunnels (readable only by you) |
 | `~/Library/Logs/tunnelbox.log`                        | Dashboard log when started at login             |
 | `/etc/nginx/sites-available/tunnelbox-<domain>` (VPS) | nginx site created for each tunnel              |
+| `/usr/local/sbin/tunnelbox-helper` (VPS)              | the only program `tunnelbox-admin` runs as root |
+| `/etc/sudoers.d/tunnelbox` (VPS)                      | allows `tunnelbox-admin` to run the helper      |
+| `/etc/tunnelbox/tunnel-user` (VPS)                    | the tunnel user the helper manages              |
 
 Set `TUNNELBOX_HOME` to keep the configuration somewhere other than `~/.tunnelbox`.
 
 ## Troubleshooting
 
-| Symptom                                                            | Fix                                                                                                                      |
-| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| Tunnel shows **Error: Permission denied**                          | The tunnel key isn't accepted. Open Settings and click **Prepare VPS** to reinstall it.                                  |
-| Tunnel keeps **Reconnecting** with "remote port forwarding failed" | An old connection still holds the port on the VPS. It clears within about 90 seconds.                                    |
-| Requests show `502` "nothing is listening on localhost:…"          | Your app isn't running on the tunnel's local port. Start it, or **Edit** the tunnel's local port.                        |
-| VPS job fails at "Checking … points to"                            | The domain's DNS doesn't point at the VPS yet. Fix DNS, then **Finish VPS setup**.                                       |
-| VPS job fails with "Permission denied (publickey)"                 | Key login as the administrator user isn't set up, or its passphrase isn't in the Keychain. See First-time setup, step 1. |
+| Symptom                                                            | Fix                                                                                                                        |
+| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| Tunnel shows **Error: Permission denied**                          | The tunnel key isn't accepted. Open Settings and click **Prepare VPS** to reinstall it.                                    |
+| Tunnel keeps **Reconnecting** with "remote port forwarding failed" | An old connection still holds the port on the VPS. It clears within about 90 seconds.                                      |
+| Requests show `502` "nothing is listening on localhost:…"          | Your app isn't running on the tunnel's local port. Start it, or **Edit** the tunnel's local port.                          |
+| VPS job fails at "Checking … points to"                            | The domain's DNS doesn't point at the VPS yet. Fix DNS, then **Finish VPS setup**.                                         |
+| VPS job fails with "Permission denied (publickey)"                 | Key login as `tunnelbox-admin` isn't set up, or its passphrase isn't in the Keychain. See First-time setup, steps 1 and 3. |
+| VPS job fails with "sudo: a password is required"                  | The helper isn't installed, or Settings has a different administrator user. See First-time setup, step 3.                  |
+| Deleting a tunnel fails with "not a tunnelbox site"                | The tunnel's nginx site wasn't created by tunnelbox. Remove it on the VPS as root, then delete the tunnel again.           |
 
 ## How it works
 
@@ -235,14 +252,15 @@ Internet ─▶ nginx (VPS :443) ─▶ 127.0.0.1:<VPS port> ─▶ SSH reverse 
 ```
 
 - Switching a tunnel on starts a small HTTP proxy on a free local port, then runs `ssh -R` as the tunnel user so the tunnel's VPS port forwards to that proxy. The proxy records each request and passes it to your app unchanged, including WebSocket upgrades and streaming responses.
-- Adding, editing, and deleting a tunnel run a bash script on the VPS over `ssh` as the administrator user. The script writes or removes the nginx site, runs certbot, and updates the tunnel user's `authorized_keys` so the tunnel key can only listen on its tunnels' ports.
+- Adding, editing, and deleting a tunnel log in to the VPS as `tunnelbox-admin` and run the helper through `sudo`. The helper writes or removes the nginx site, runs certbot, and updates the tunnel user's `authorized_keys` so the tunnel key can only listen on its tunnels' ports.
 - Settings and tunnels are stored in `~/.tunnelbox/configuration.json`. Tunnel status, activity, and request logs are kept in memory.
 
 ## Development
 
 ```
-server/   Fastify API, tunnel manager, request proxy, VPS scripts
+server/   Fastify API, tunnel manager, request proxy, helper commands
 web/      React dashboard (Vite, Tailwind CSS, TanStack Query)
+vps/      tunnelbox-helper and install.sh, which run on the VPS
 ```
 
 ```bash

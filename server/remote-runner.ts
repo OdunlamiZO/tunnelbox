@@ -4,11 +4,11 @@ import type { ServerSettings } from "./types";
 
 export type RemoteRunner = (
   settings: ServerSettings,
-  script: string,
+  command: string,
   onLine: (line: string) => void
 ) => Promise<void>;
 
-export const runRemoteScript: RemoteRunner = (settings, script, onLine) =>
+export const runRemoteCommand: RemoteRunner = (settings, command, onLine) =>
   new Promise((resolve, reject) => {
     const child = spawn(
       "ssh",
@@ -20,9 +20,9 @@ export const runRemoteScript: RemoteRunner = (settings, script, onLine) =>
         "-o",
         "StrictHostKeyChecking=accept-new",
         `${settings.administratorUser}@${settings.host}`,
-        "bash -s",
+        command,
       ],
-      { stdio: ["pipe", "pipe", "pipe"] }
+      { stdio: ["ignore", "pipe", "pipe"] }
     );
 
     const forwardLines = (chunk: Buffer) => {
@@ -40,9 +40,7 @@ export const runRemoteScript: RemoteRunner = (settings, script, onLine) =>
       if (code === 0) {
         resolve();
       } else {
-        reject(new Error(`The VPS script exited with code ${code}.`));
+        reject(new Error(`The VPS command exited with code ${code}.`));
       }
     });
-
-    child.stdin.end(script);
   });

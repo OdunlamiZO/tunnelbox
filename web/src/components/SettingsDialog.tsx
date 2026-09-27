@@ -19,7 +19,7 @@ type Props = {
 
 const EMPTY_SETTINGS: ServerSettings = {
   host: "",
-  administratorUser: "root",
+  administratorUser: "tunnelbox-admin",
   tunnelUser: "tunnel",
   tunnelKeyPath: "~/.ssh/tunnelbox_tunnel",
   certificateEmail: "",

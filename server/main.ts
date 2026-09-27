@@ -10,7 +10,7 @@ import {
 } from "./configuration-store";
 import { DASHBOARD_HOST, DASHBOARD_PORT } from "./constants";
 import { JobRunner } from "./job-runner";
-import { runRemoteScript } from "./remote-runner";
+import { runRemoteCommand } from "./remote-runner";
 import { TunnelManager } from "./tunnel-manager";
 import { TunnelService } from "./tunnel-service";
 
@@ -28,7 +28,7 @@ const service = new TunnelService(
   store,
   new TunnelManager(),
   new JobRunner(),
-  runRemoteScript
+  runRemoteCommand
 );
 const application = buildApplication(service);
 

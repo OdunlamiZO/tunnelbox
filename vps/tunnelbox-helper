@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+# Runs as root through sudo. The administrator user may run only this program,
+# so every argument is validated here and only tunnelbox's own sites, certificates,
+# and tunnel user can be changed.
+set -euo pipefail
+
+HELPER_VERSION=1
+SITE_PREFIX="tunnelbox-"
+TUNNEL_USER_FILE=/etc/tunnelbox/tunnel-user
+
+fail() {
+  echo "tunnelbox-helper: $*" >&2
+  exit 1
+}
+
+valid_domain() {
+  local pattern='^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$'
+
+  [[ ${#1} -le 253 && $1 =~ $pattern ]]
+}
+
+valid_port() {
+  [[ $1 =~ ^[0-9]{4,5}$ ]] && ((10#$1 >= 1024 && 10#$1 <= 65535))
+}
+
+valid_email() {
+  local pattern='^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
+
+  [[ $1 =~ $pattern ]]
+}
+
+valid_public_key() {
+  local pattern='^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)) [A-Za-z0-9+/]+={0,3}( [A-Za-z0-9._@+-]+)?$'
+
+  [[ $1 =~ $pattern ]]
+}
+
+valid_site_name() {
+  local pattern="^${SITE_PREFIX}[a-z0-9.-]+$"
+
+  [[ $1 =~ $pattern ]]
+}
+
+tunnel_user() {
+  [[ -f $TUNNEL_USER_FILE ]] || fail "tunnelbox is not installed on this server ($TUNNEL_USER_FILE is missing). Run install.sh as root."
+
+  local user
+  user=$(<"$TUNNEL_USER_FILE")
+  [[ $user =~ ^[a-z_][a-z0-9_-]{0,31}$ && $user != root ]] || fail "invalid tunnel user in $TUNNEL_USER_FILE"
+  echo "$user"
+}
+
+site_directories() {
+  if [[ -d /etc/nginx/sites-available ]]; then
+    SITE_DIRECTORY=/etc/nginx/sites-available
+    ENABLED_DIRECTORY=/etc/nginx/sites-enabled
+    SITE_SUFFIX=""
+  else
+    SITE_DIRECTORY=/etc/nginx/conf.d
+    ENABLED_DIRECTORY=""
+    SITE_SUFFIX=".conf"
+  fi
+}
+
+reload_nginx() {
+  nginx -t
+  systemctl reload nginx
+}
+
+command_check_port() {
+  local port=$1
+
+  valid_port "$port" || fail "invalid port: $port"
+
+  echo "==> Checking port $port is free"
+
+  if ss -tln | grep -q ":$port "; then
+    fail "port $port is already in use on the VPS"
+  fi
+}
+
+command_add_site() {
+  local domain=$1 port=$2 email=$3
+
+  valid_domain "$domain" || fail "invalid domain: $domain"
+  valid_port "$port" || fail "invalid port: $port"
+  valid_email "$email" || fail "invalid email: $email"
+
+  site_directories
+
+  local name="${SITE_PREFIX}${domain}"
+  local site_file="$SITE_DIRECTORY/$name$SITE_SUFFIX"
+
+  echo "==> Writing nginx site for $domain"
+
+  cat >"$site_file" <<SITE
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $domain;
+
+    location / {
+        proxy_pass http://127.0.0.1:$port;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection \$http_connection;
+
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+
+        proxy_buffering off;
+        proxy_read_timeout 1h;
+    }
+}
+SITE
+
+  if [[ -n $ENABLED_DIRECTORY ]]; then
+    ln -sf "$site_file" "$ENABLED_DIRECTORY/$name"
+  fi
+
+  reload_nginx
+
+  echo "==> Certificate for $domain"
+
+  if ! command -v certbot >/dev/null 2>&1; then
+    apt-get install -y certbot python3-certbot-nginx
+  fi
+
+  certbot --nginx -d "$domain" --non-interactive --agree-tos --no-eff-email \
+    --redirect --keep-until-expiring -m "$email"
+  reload_nginx
+}
+
+command_remove_site() {
+  local name=$1
+
+  valid_site_name "$name" || fail "not a tunnelbox site: $name"
+
+  site_directories
+
+  local site_file="$SITE_DIRECTORY/$name$SITE_SUFFIX"
+  local domain=""
+
+  if [[ -f $site_file ]]; then
+    domain=$(awk '$1 == "server_name" { gsub(";", "", $2); print $2; exit }' "$site_file")
+  fi
+
+  echo "==> Removing nginx site $name"
+
+  if [[ -n $ENABLED_DIRECTORY ]]; then
+    rm -f "$ENABLED_DIRECTORY/$name"
+  fi
+
+  rm -f "$site_file"
+  reload_nginx
+
+  if [[ -n $domain ]] && valid_domain "$domain" && [[ -d /etc/letsencrypt/live/$domain ]]; then
+    echo "==> Removing certificate for $domain"
+    certbot delete --non-interactive --cert-name "$domain"
+  fi
+}
+
+authorized_keys_line() {
+  local public_key=$1 ports=$2
+
+  valid_public_key "$public_key" || fail "invalid public key"
+
+  if [[ -z $ports ]]; then
+    echo "restrict $public_key"
+
+    return
+  fi
+
+  local permissions="" port
+
+  for port in $(tr ',' '\n' <<<"$ports" | sort -un); do
+    valid_port "$port" || fail "invalid port: $port"
+    permissions+=",permitlisten=\"127.0.0.1:$port\""
+  done
+
+  echo "restrict,port-forwarding$permissions $public_key"
+}
+
+command_set_ports() {
+  local public_key=$1 ports=$2
+  local user line
+  user=$(tunnel_user)
+  line=$(authorized_keys_line "$public_key" "$ports")
+
+  echo "==> Updating port permissions for $user"
+
+  local home
+  home=$(getent passwd "$user" | cut -d: -f6)
+  [[ -n $home && -d $home ]] || fail "tunnel user $user has no home directory"
+
+  install -d -m 700 -o "$user" -g "$user" "$home/.ssh"
+  printf '%s\n' "$line" >"$home/.ssh/authorized_keys"
+  chown "$user:$user" "$home/.ssh/authorized_keys"
+  chmod 600 "$home/.ssh/authorized_keys"
+}
+
+command_prepare() {
+  local user
+  user=$(tunnel_user)
+
+  echo "==> Tunnel user $user"
+
+  if ! id "$user" >/dev/null 2>&1; then
+    adduser --disabled-password --gecos "" --shell /usr/sbin/nologin "$user"
+  fi
+
+  echo "==> SSH keep-alive settings"
+  printf 'ClientAliveInterval 30\nClientAliveCountMax 3\n' >/etc/ssh/sshd_config.d/tunnel.conf
+  sshd -t
+  systemctl reload ssh 2>/dev/null || systemctl reload sshd
+}
+
+main() {
+  [[ $(id -u) -eq 0 ]] || fail "must run as root (through sudo)"
+
+  local command=${1:-}
+  shift || true
+
+  case $command in
+    version)
+      echo "$HELPER_VERSION"
+      ;;
+    check-port)
+      [[ $# -eq 1 ]] || fail "usage: check-port PORT"
+      command_check_port "$1"
+      ;;
+    add-site)
+      [[ $# -eq 3 ]] || fail "usage: add-site DOMAIN PORT EMAIL"
+      command_add_site "$1" "$2" "$3"
+      ;;
+    remove-site)
+      [[ $# -eq 1 ]] || fail "usage: remove-site SITE_NAME"
+      command_remove_site "$1"
+      ;;
+    set-ports)
+      [[ $# -eq 2 ]] || fail "usage: set-ports PUBLIC_KEY PORTS"
+      command_set_ports "$1" "$2"
+      ;;
+    prepare)
+      [[ $# -eq 0 ]] || fail "usage: prepare"
+      command_prepare
+      ;;
+    *)
+      fail "unknown command: ${command:-none}"
+      ;;
+  esac
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  main "$@"
+fi

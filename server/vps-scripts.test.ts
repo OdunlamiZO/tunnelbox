@@ -1,19 +1,27 @@
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import type { ServerSettings, TunnelDefinition } from "./types";
 import {
-  authorizedKeysLine,
-  changeDomainScript,
-  deprovisionTunnelScript,
-  prepareServerScript,
-  provisionTunnelScript,
+  changeDomainCommand,
+  deprovisionTunnelCommand,
+  prepareServerCommand,
+  provisionTunnelCommand,
   shellQuote,
 } from "./vps-scripts";
 
+const HELPER_FILE = fileURLToPath(
+  new URL("../vps/tunnelbox-helper", import.meta.url)
+);
+
+const INSTALL_FILE = fileURLToPath(
+  new URL("../vps/install.sh", import.meta.url)
+);
+
 const settings: ServerSettings = {
   host: "203.0.113.10",
-  administratorUser: "root",
+  administratorUser: "tunnelbox-admin",
   tunnelUser: "tunnel",
   tunnelKeyPath: "~/.ssh/tunnelbox_tunnel",
   certificateEmail: "owner@example.com",
@@ -30,7 +38,7 @@ const tunnel: TunnelDefinition = {
   provisioned: true,
 };
 
-const publicKey = "ssh-ed25519 AAAAexample tunnelbox-api.example.org";
+const publicKey = "ssh-ed25519 AAAAexample tunnelbox-tunnel";
 
 function assertValidBash(script: string) {
   const result = spawnSync("bash", ["-n"], { input: script });
@@ -39,17 +47,18 @@ function assertValidBash(script: string) {
   expect(result.status).toBe(0);
 }
 
-describe("authorizedKeysLine", () => {
-  it("allows only the listed ports on localhost, sorted and without duplicates", () => {
-    expect(authorizedKeysLine(publicKey, [9081, 9080, 9081])).toBe(
-      `restrict,port-forwarding,permitlisten="127.0.0.1:9080",permitlisten="127.0.0.1:9081" ${publicKey}`
-    );
-  });
+function runHelperFunction(...functionCall: string[]) {
+  const call = functionCall.map(shellQuote).join(" ");
+  const result = spawnSync("bash", [
+    "-c",
+    `source ${shellQuote(HELPER_FILE)} && ${call}`,
+  ]);
 
-  it("drops port forwarding entirely when no ports remain", () => {
-    expect(authorizedKeysLine(publicKey, [])).toBe(`restrict ${publicKey}`);
-  });
-});
+  return {
+    succeeded: result.status === 0,
+    output: result.stdout.toString().trim(),
+  };
+}
 
 describe("shellQuote", () => {
   it("survives embedded single quotes", () => {
@@ -62,50 +71,135 @@ describe("shellQuote", () => {
   });
 });
 
-describe("generated scripts", () => {
-  it("provision script checks the port, writes the site, and requests a certificate", () => {
-    const script = provisionTunnelScript(tunnel, settings, publicKey, [9080]);
-
-    assertValidBash(script);
-    expect(script).toContain("grep -q ':9080 '");
-    expect(script).toContain("server_name api.example.org;");
-    expect(script).toContain("proxy_pass http://127.0.0.1:9080;");
-    expect(script).toContain("proxy_set_header Upgrade $http_upgrade;");
-    expect(script).toContain(
-      "certbot --nginx -d api.example.org --non-interactive"
+describe("helper commands", () => {
+  it("provisioning checks the port, adds the site, then updates the key's ports", () => {
+    const command = provisionTunnelCommand(
+      tunnel,
+      settings,
+      publicKey,
+      [9081, 9080, 9081]
     );
-    expect(script).toContain('permitlisten="127.0.0.1:9080"');
+
+    assertValidBash(command);
+    expect(command).toBe(
+      [
+        "sudo -n /usr/local/sbin/tunnelbox-helper 'check-port' '9080'",
+        "sudo -n /usr/local/sbin/tunnelbox-helper 'add-site' 'api.example.org' '9080' 'owner@example.com'",
+        `sudo -n /usr/local/sbin/tunnelbox-helper 'set-ports' '${publicKey}' '9080,9081'`,
+      ].join(" && ")
+    );
   });
 
-  it("deprovision script removes the site and certificate", () => {
-    const script = deprovisionTunnelScript(tunnel, settings, publicKey, []);
+  it("deprovisioning removes the site and passes no ports when none remain", () => {
+    const command = deprovisionTunnelCommand(tunnel, publicKey, []);
 
-    assertValidBash(script);
-    expect(script).toContain(
-      'rm -f "$ENABLED_DIRECTORY/tunnelbox-api.example.org"'
-    );
-    expect(script).toContain(
-      "certbot delete --non-interactive --cert-name api.example.org"
-    );
-    expect(script).toContain(`restrict ${publicKey}`);
+    assertValidBash(command);
+    expect(command).toContain("'remove-site' 'tunnelbox-api.example.org'");
+    expect(command).toMatch(/'set-ports' '.+' ''$/);
   });
 
-  it("change-domain script adds the new site before removing the old one", () => {
-    const moved = {
+  it("changing the domain adds the new site before removing the old one", () => {
+    const moved: TunnelDefinition = {
       ...tunnel,
-      domain: "api.example.org",
-      nginxSiteName: "tunnelbox-api.example.org",
+      domain: "app.example.org",
+      nginxSiteName: "tunnelbox-app.example.org",
     };
-    const script = changeDomainScript(tunnel, moved, settings);
+    const command = changeDomainCommand(tunnel, moved, settings);
 
-    assertValidBash(script);
-    expect(script.indexOf("server_name api.example.org;")).toBeLessThan(
-      script.indexOf("Removing nginx site for api.example.org")
+    assertValidBash(command);
+    expect(command.indexOf("'add-site' 'app.example.org'")).toBeLessThan(
+      command.indexOf("'remove-site' 'tunnelbox-api.example.org'")
     );
-    expect(script).not.toContain("is already in use");
   });
 
-  it("prepare-server script is valid bash", () => {
-    assertValidBash(prepareServerScript(settings, publicKey, [9080]));
+  it("preparing the server installs the tunnel key", () => {
+    const command = prepareServerCommand(publicKey, [9080]);
+
+    assertValidBash(command);
+    expect(command).toContain("'prepare'");
+    expect(command).toContain("'set-ports'");
+  });
+});
+
+describe("VPS scripts", () => {
+  it("are valid bash", () => {
+    for (const file of [HELPER_FILE, INSTALL_FILE]) {
+      const result = spawnSync("bash", ["-n", file]);
+
+      expect(result.stderr.toString()).toBe("");
+      expect(result.status).toBe(0);
+    }
+  });
+});
+
+describe("tunnelbox-helper validation", () => {
+  it.each(["api.example.org", "myapp.duckdns.org", "a-b.example.co"])(
+    "accepts the domain %s",
+    (domain) => {
+      expect(runHelperFunction("valid_domain", domain).succeeded).toBe(true);
+    }
+  );
+
+  it.each([
+    "example",
+    "-bad.example.org",
+    "api.example.org; rm -rf /",
+    "api.example.org/../x",
+    "API.EXAMPLE.ORG",
+  ])("rejects the domain %s", (domain) => {
+    expect(runHelperFunction("valid_domain", domain).succeeded).toBe(false);
+  });
+
+  it.each(["1024", "9080", "65535"])("accepts the port %s", (port) => {
+    expect(runHelperFunction("valid_port", port).succeeded).toBe(true);
+  });
+
+  it.each(["80", "1023", "65536", "9080a", "", "9080 9081"])(
+    "rejects the port %s",
+    (port) => {
+      expect(runHelperFunction("valid_port", port).succeeded).toBe(false);
+    }
+  );
+
+  it("only manages tunnelbox sites", () => {
+    expect(
+      runHelperFunction("valid_site_name", "tunnelbox-api.example.org")
+        .succeeded
+    ).toBe(true);
+    expect(runHelperFunction("valid_site_name", "default").succeeded).toBe(
+      false
+    );
+    expect(
+      runHelperFunction("valid_site_name", "tunnelbox-../../ssh").succeeded
+    ).toBe(false);
+  });
+
+  it("rejects public keys with options or extra content", () => {
+    expect(runHelperFunction("valid_public_key", publicKey).succeeded).toBe(
+      true
+    );
+    expect(
+      runHelperFunction("valid_public_key", `command="sh" ${publicKey}`)
+        .succeeded
+    ).toBe(false);
+    expect(
+      runHelperFunction("valid_public_key", `${publicKey}\nssh-ed25519 AAAAx`)
+        .succeeded
+    ).toBe(false);
+  });
+
+  it("allows only the listed ports on localhost, sorted and without duplicates", () => {
+    expect(
+      runHelperFunction("authorized_keys_line", publicKey, "9081,9080,9081")
+        .output
+    ).toBe(
+      `restrict,port-forwarding,permitlisten="127.0.0.1:9080",permitlisten="127.0.0.1:9081" ${publicKey}`
+    );
+  });
+
+  it("drops port forwarding entirely when no ports remain", () => {
+    expect(
+      runHelperFunction("authorized_keys_line", publicKey, "").output
+    ).toBe(`restrict ${publicKey}`);
   });
 });
