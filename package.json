@@ -1,0 +1,41 @@
+{
+  "name": "tunnelbox",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local dashboard for starting, stopping, and provisioning SSH reverse tunnels to a VPS",
+  "scripts": {
+    "dev": "concurrently --names server,web --prefix-colors blue,magenta \"tsx watch server/main.ts\" \"vite\"",
+    "build": "vite build",
+    "start": "vite build && tsx server/main.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "serve": "tsx server/main.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@fastify/static": "^10.1.5",
+    "@tanstack/react-query": "^5.104.0",
+    "fastify": "^5.12.5",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "tsx": "^4.23.15"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^26.6.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "concurrently": "^10.0.5",
+    "prettier": "^3.9.9",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.1",
+    "vitest": "^3.2.7"
+  }
+}
